@@ -42,6 +42,7 @@ static volatile bool stream_active = false;
 // Statistics
 static volatile uint32_t transactions_processed = 0;
 static volatile uint32_t keys_found = 0;
+static volatile bool key_found_flag = false;
 
 bool checkAndStoreKey();
 
@@ -104,6 +105,7 @@ void processSPIByte(uint8_t mosi, uint8_t miso) {
                     // Check for key pattern
                     if (checkAndStoreKey()) {
                         keys_found++;
+                        key_found_flag = true;
                     }
                 }
                 state = 0; // Reset
@@ -279,6 +281,12 @@ int main() {
             else if (cmd_pos < CMD_BUFFER_SIZE - 1) {
                 cmd_buffer[cmd_pos++] = c;
             }
+        }
+
+        if (key_found_flag) {
+            printf("\n[[[ !!! KEY FOUND !!! ]]]\n");
+            printf("Stored to Flash. Use 'getkey' to view.\n");
+            key_found_flag = false; // Reset flag so we don't spam
         }
 
         // --- Drain Stream Buffer to Console ---
