@@ -58,18 +58,15 @@ static char cmd_buffer[CMD_BUFFER_SIZE];
 static int cmd_pos = 0;
 
 // --- Volatile Variables ---
-static volatile uint32_t transactions_processed = 0, keys_found = 0;
-static volatile int stream_head = 0, stream_tail = 0;
-static volatile bool stream_active = false, key_save_pending = false;
+static volatile uint32_t transactions_processed = 0;
+static volatile uint32_t keys_found = 0;
+static volatile int stream_head = 0;
+static volatile int stream_tail = 0;
+static volatile bool stream_active = false;
+static volatile bool key_save_pending = false;
 static volatile uint16_t stream_buffer[STREAM_BUFFER_SIZE];
 
 // --- Helper Functions ---
-static inline bool is_stream_empty(void) {
-    uint32_t ints = save_and_disable_interrupts();
-    bool empty = (stream_head == stream_tail);
-    restore_interrupts(ints);
-    return empty;
-}
 
 // NOTE: stream_push_isr must be called from within a critical section
 static inline void stream_push_isr(uint16_t entry) {
@@ -82,26 +79,14 @@ static inline void stream_push_isr(uint16_t entry) {
     // Drop if full
 }
 
-static inline void stream_push(uint16_t entry) {
+static inline uint16_t stream_pop(void) {
     uint32_t ints = save_and_disable_interrupts();
-    stream_push_isr(entry);
-    restore_interrupts(ints);
-}
-
-// NOTE: stream_pop_isr must be called from within a critical section
-static inline uint16_t stream_pop_isr(void) {
     int tail = stream_tail;
     if (tail == stream_head) {
         return 0xFFFF; // Empty
     }
     uint16_t entry = stream_buffer[tail];
     stream_tail = (tail + 1) % STREAM_BUFFER_SIZE;
-    return entry;
-}
-
-static inline uint16_t stream_pop(void) {
-    uint32_t ints = save_and_disable_interrupts();
-    uint16_t entry = stream_pop_isr();
     restore_interrupts(ints);
     return entry;
 }
@@ -171,8 +156,8 @@ int main() {
             uint32_t ints = save_and_disable_interrupts();
             uint8_t mosi_byte = (uint8_t)(pio_sm_get(pio, sm_mosi) >> 24);
             uint8_t miso_byte = (uint8_t)(pio_sm_get(pio, sm_miso) >> 24);
-            restore_interrupts(ints);
             processSPIByte(mosi_byte, miso_byte);
+            restore_interrupts(ints);
         }
 
         // Stream output
@@ -216,7 +201,6 @@ int main() {
 }
 
 void processSPIByte(uint8_t mosi, uint8_t miso) {
-    uint32_t ints = save_and_disable_interrupts();
 
     switch(machine_state.state) {
         case STATE_IDLE:
@@ -267,7 +251,6 @@ void processSPIByte(uint8_t mosi, uint8_t miso) {
             break;
     }
 
-    restore_interrupts(ints);
 }
 
 // Simplified sliding window - maintains last 44 bytes like Python version
