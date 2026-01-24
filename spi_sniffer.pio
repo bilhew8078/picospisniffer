@@ -1,0 +1,49 @@
+; spi_sniffer.pio
+; PIO program to passively sniff SPI traffic.
+; It waits for CS to go High (Idle), then Low (Active).
+; It captures bytes in a loop as long as CS stays Low.
+; When CS goes High, it wraps back to start.
+
+.program spi_sniffer
+
+; -------------------------------
+; Pins Configuration (Controlled from C)
+; -------------------------------
+; WAIT PIN 0 : Chip Select (CS)
+; WAIT PIN 1 : Clock (SCK)
+; IN  PINS 0 : Data (MOSI or MISO) (Note: '0' here refers to the configured IN base)
+
+.wrap_target
+start:
+    ; Wait for CS to go High (Idle) first to ensure we sync correctly
+    wait 1 pin 0
+    ; Wait for CS to go Low (Active) to start a transaction
+    wait 0 pin 0
+
+capture_byte:
+    ; Counter for 8 bits
+    set x, 7
+
+bitloop:
+    ; Wait for Clock Rising Edge (SPI Mode 0)
+    wait 1 pin 1
+    ; Shift 1 bit from Data Pin (0) into ISR
+    in pins, 1
+    ; Decrement loop counter
+    jmp x--, bitloop
+
+    ; Push the 8-bit byte to the RX FIFO for CPU to read
+    push
+
+    ; Check CS status using JMP PIN.
+    ; We configured the Jump Pin to be CS (Pin 0) in main.cpp.
+    ; If the Jump Pin is HIGH (1), we jump to cs_high_handler.
+    jmp pin, cs_high_handler
+
+    ; If the Jump Pin is LOW (0), we fall through to here and loop back
+    jmp capture_byte
+
+cs_high_handler:
+    ; CS is High. Wait for CS to remain High/return to High to ensure synchronization
+    wait 1 pin 0
+.wrap

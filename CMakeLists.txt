@@ -12,10 +12,15 @@ add_executable(bitlocker_sniffer
     flash_storage.cpp
 )
 
+# Generate PIO source files
+pico_generate_pio_header(bitlocker_sniffer ${CMAKE_CURRENT_LIST_DIR}/spi_sniffer.pio)
+
+
 target_link_libraries(bitlocker_sniffer
     pico_stdlib
     hardware_gpio
     hardware_flash
+    hardware_pio
 )
 
 pico_enable_stdio_usb(bitlocker_sniffer 1)
