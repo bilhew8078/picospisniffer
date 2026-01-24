@@ -1,12 +1,13 @@
-#pragma once
+#ifndef FLASH_STORAGE_H
+#define FLASH_STORAGE_H
+
 #include <stdint.h>
 #include <stdbool.h>
 
-// Store a 32-byte BitLocker key to flash
+#define KEY_DATA_LEN 32
+
 void flash_store_key(const uint8_t* key);
-
-// Retrieve a stored key (returns false if none found)
 bool flash_retrieve_key(uint8_t* key);
+void flash_erase_key(void);
 
-// Erase any stored key
-void flash_erase_key();
+#endif // FLASH_STORAGE_H

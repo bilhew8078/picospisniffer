@@ -3,18 +3,15 @@
 #include "hardware/sync.h"
 #include <cstring>
 
-// Store key at last flash sector
 #define KEY_FLASH_ADDR (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
 
-// In-memory key cache
-static uint8_t cached_key[32] = {0};
+static uint8_t cached_key[KEY_DATA_LEN] = {0};
 static bool key_cached = false;
 
-// Structure for flash storage
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    uint8_t key[32];
+    uint8_t key[KEY_DATA_LEN];
     uint32_t crc;
 } key_store_t;
 
@@ -29,23 +26,20 @@ static uint32_t crc32(const uint8_t* data, size_t len) {
     return ~crc;
 }
 
+// CRITICAL: Must run from RAM during flash operations
 void __attribute__((section(".ramcode"))) flash_store_key(const uint8_t* key) {
     key_store_t store;
-    store.magic = 0x424C4B59;  // "BLKY"
+    store.magic = 0x424C4B59; // "BLKY"
     store.version = 1;
-    memcpy(store.key, key, 32);
-
+    memcpy(store.key, key, KEY_DATA_LEN);
     store.crc = crc32((const uint8_t*)&store, sizeof(key_store_t) - sizeof(uint32_t));
 
     uint8_t write_buffer[256];
     memset(write_buffer, 0xFF, 256);
     memcpy(write_buffer, &store, sizeof(store));
 
-    // --- CRITICAL FIX: Update RAM cache BEFORE flash operations ---
-    // Once flash_range_erase is called, the Flash is inaccessible.
-    // Calling memcpy(cached_key...) AFTER erase/program would crash the MCU
-    // because memcpy instructions reside in Flash.
-    memcpy(cached_key, key, 32);
+    // CRITICAL: Update RAM cache BEFORE flash erase
+    memcpy(cached_key, key, KEY_DATA_LEN);
     key_cached = true;
 
     uint32_t ints = save_and_disable_interrupts();
@@ -56,7 +50,7 @@ void __attribute__((section(".ramcode"))) flash_store_key(const uint8_t* key) {
 
 bool flash_retrieve_key(uint8_t* key) {
     if (key_cached) {
-        memcpy(key, cached_key, 32);
+        memcpy(key, cached_key, KEY_DATA_LEN);
         return true;
     }
 
@@ -64,17 +58,19 @@ bool flash_retrieve_key(uint8_t* key) {
     const key_store_t* store = (const key_store_t*)flash_ptr;
 
     if (store->magic != 0x424C4B59) return false;
-
     if (store->crc != crc32((const uint8_t*)store, sizeof(key_store_t) - sizeof(uint32_t))) return false;
 
-    memcpy(key, store->key, 32);
-    memcpy(cached_key, store->key, 32);
+    memcpy(key, store->key, KEY_DATA_LEN);
+    memcpy(cached_key, store->key, KEY_DATA_LEN);
     key_cached = true;
     return true;
 }
 
 void __attribute__((section(".ramcode"))) flash_erase_key() {
+    uint32_t ints = save_and_disable_interrupts();
     flash_range_erase(KEY_FLASH_ADDR, FLASH_SECTOR_SIZE);
+    restore_interrupts(ints);
+
     key_cached = false;
-    memset(cached_key, 0, 32);
+    memset(cached_key, 0, KEY_DATA_LEN);
 }
