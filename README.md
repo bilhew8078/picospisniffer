@@ -12,21 +12,23 @@ Firmware for the Raspberry Pi Pico to sniff TPM SPI traffic using the Pico's Pro
 ## Hardware
 - **Board:** Raspberry Pi Pico (RP2040).
 - **Connections:** Connect to the TPM SPI bus (3.3V logic).
-  - `GPIO 2` -> SCK
-  - `GPIO 3` -> MOSI
-  - `GPIO 4` -> MISO
-  - `GPIO 5` -> CS
-  
+  - **GPIO 1** -> SCK
+  - **GPIO 2** -> MOSI
+  - **GPIO 3** -> MISO
+  - **GPIO 0** -> CS
+
 ## Usage
 Connect via USB Serial (115200 baud). Use the following commands:
 
 | Command | Description |
 | :--- | :--- |
-| `status` | Show transaction count, key status, and buffer levels. |
+| `status` | Show transaction count and keys found. |
 | `getkey` | Print the stored BitLocker key (hex). |
-| `stream` | Toggle live hex stream of TPM data. Format: `[R]FF` (Read) or `[W]01` (Write). |
 | `erasekey` | Delete the key from flash memory. |
-| `reset` | Clear buffers, reset window, and zero out stats. |
+| `stream` | Toggle live hex stream of TPM data. |
+| `stats` | Show current window length. |
+| `clear` | Clear statistics (transactions, keys found, window). |
+| `reset` | Reset state machine and clear buffers. |
 
 ## Output Example
 ```text
@@ -36,15 +38,14 @@ DATA: [W]80 [W]01 [W]00 [W]00
 DATA: [R]00 [R]00 [R]00 [R]00
 DATA: [W]2C [W]00 [W]00 [W]04
 ...
-[[[ !!! KEY FOUND !!! ]]]
-Stored to Flash. Use 'getkey' to view.
+[[[ !!! KEY FOUND AND STORED !!! ]]]\nStored to Flash. Use 'getkey' to view.
 ```
 
 ## Extraction Sequence
 
 1. **Power on Pico** - The PIO engine begins monitoring immediately.
-2. **Boot target system** - BitLocker解锁.
-3. **Key detected** - Automatically validated via CRC32 and written to flash.
+2. **Boot target system** - BitLocker unlocks.
+3. **Key detected** - Automatically validated and written to flash.
 4. **Connect USB** - run `screen /dev/ttyACM0 115200`.
 5. **Type `getkey`** - retrieves the 64-character hex key.
 6. **Type `erasekey`** - Secure erase after extraction.
@@ -53,13 +54,12 @@ Stored to Flash. Use 'getkey' to view.
 
 ## Build & Deployment
 
-**Prerequisites:**
-- Pico SDK
-- CMake
-- ARM GCC Toolchain
 
 **Steps:**
 ```bash
+# Install packages
+sudo apt install cmake python3 build-essential gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
 # Clone SDK and setup
 git clone https://github.com/raspberrypi/pico-sdk.git
 cd pico-sdk && git submodule update --init && cd ..
@@ -73,11 +73,6 @@ cmake .. -DPICO_SDK_PATH=../pico-sdk
 make -j4
 ```
 
-**Important:** Ensure your `spi_sniffer.pio` file is included in your `CMakeLists.txt` to generate the assembly header:
-```cmake
-pico_generate_pio_header(picoblky ${CMAKE_CURRENT_LIST_DIR}/spi_sniffer.pio)
-```
-
 **Flash to Pico (hold BOOTSEL, copy UF2):**
 ```bash
 cp picoblky.uf2 /media/$USER/RPI-RP2/
@@ -87,11 +82,12 @@ cp picoblky.uf2 /media/$USER/RPI-RP2/
 
 | Pico Pin | Signal | Connect To |
 |----------|--------|------------|
-| GPIO2    | SCK    | TPM SPI CLK |
-| GPIO3    | MOSI   | TPM SPI MOSI |
-| GPIO4    | MISO   | TPM SPI MISO |
-| GPIO5    | CS     | TPM SPI CS# |
+| GPIO 0   | CS     | TPM SPI CS# |
+| GPIO 1   | SCK    | TPM SPI CLK |
+| GPIO 2   | MOSI   | TPM SPI MOSI |
+| GPIO 3   | MISO   | TPM SPI MISO |
 | GND      | GND    | System GND |
 
 **⚠️ Hardware Warning**: The Pico's GPIO inputs are 3.3V only. Use level shifters if TPM operates at 1.8V or 5V.
+
 
