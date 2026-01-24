@@ -1,12 +1,12 @@
 #include "flash_storage.h"
 #include "hardware/flash.h"
-#include "pico/sync.h"  // Required for save_and_disable_interrupts()
-#include <cstring>      // For memcpy/memset
+#include "pico/sync.h"
+#include <cstring>
 
 // Store key at last flash sector to avoid program code
 #define KEY_FLASH_ADDR (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
 
-// In-memory key buffer (for quick retrieval)
+// In-memory key cache
 static uint8_t cached_key[32] = {0};
 static bool key_cached = false;
 
@@ -36,17 +36,14 @@ void flash_store_key(const uint8_t* key) {
     memcpy(store.key, key, 32);
     store.crc = crc32(store.key, 32);
 
-    // Critical section: disable interrupts during flash write
-    uint32_t ints = save_and_disable_interrupts();
+    // Flash_range_program requires size to be multiple of 256 bytes.
+    // We create a local buffer, pad with 0xFF, and write 256 bytes.
+    uint8_t write_buffer[256];
+    memset(write_buffer, 0xFF, 256);
+    memcpy(write_buffer, &store, sizeof(store));
 
-    // Erase sector
     flash_range_erase(KEY_FLASH_ADDR, FLASH_SECTOR_SIZE);
-
-    // Write key structure
-    flash_range_program(KEY_FLASH_ADDR, (const uint8_t*)&store, sizeof(store));
-
-    // Restore interrupts
-    restore_interrupts(ints);
+    flash_range_program(KEY_FLASH_ADDR, write_buffer, 256);
 
     // Update cache
     memcpy(cached_key, key, 32);
@@ -60,10 +57,11 @@ bool flash_retrieve_key(uint8_t* key) {
         return true;
     }
 
-    // Read from flash
+    // Read from flash (XIP base)
     const uint8_t* flash_ptr = (const uint8_t*)(XIP_BASE + KEY_FLASH_ADDR);
     const key_store_t* store = (const key_store_t*)flash_ptr;
 
+    // Check magic
     if (store->magic != 0x424C4B59) return false;
 
     // Verify CRC
@@ -76,9 +74,7 @@ bool flash_retrieve_key(uint8_t* key) {
 }
 
 void flash_erase_key() {
-    uint32_t ints = save_and_disable_interrupts();
     flash_range_erase(KEY_FLASH_ADDR, FLASH_SECTOR_SIZE);
-    restore_interrupts(ints);
     key_cached = false;
     memset(cached_key, 0, 32);
 }
