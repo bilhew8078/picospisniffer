@@ -1,0 +1,26 @@
+# Build directory
+build/
+
+# Pico SDK (if cloned inside project)
+pico-sdk/
+
+# Build artifacts
+*.elf
+*.uf2
+*.bin
+*.hex
+*.map
+*.lst
+*.dis
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.kate-swp
+
+# OS files
+.DS_Store
+Thumbs.db
