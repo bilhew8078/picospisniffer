@@ -1,43 +1,50 @@
-; spi_sniffer.pio   MODIFIED FOR STEPPER CONTROLLER SNIFFING
-; PIO program to passively sniff SPI traffic on TI Stepper Controller.
-; It waits for CS to go Low (Idle), then High (Active).
-; It captures bytes in a loop as long as CS stays High.
-; When CS goes Low, it wraps back to start.
+; code based on "pico examples - clocked_input.pio"
+
+.pio_version 0 // only requires PIO version 0
 
 .program spi_sniffer
 
-; -------------------------------
-; Pins Configuration (Controlled from C)
-; -------------------------------
-; WAIT PIN 0 : Chip Select (CS)
-; WAIT PIN 1 : Clock (SCK)
-; IN  PINS 0 : Data (MOSI or MISO) (Note: '0' here refers to the configured IN base)
+; Sample bits using an external clock, and push groups of bits into the RX FIFO.
+; - IN pin 0 is the data pin
+; - Autopush is enabled, threshold 16
+
+start:
+    ; Wait for CS to go Low (Idle) first to ensure we sync correctly
+    wait 0 gpio 0
+    ; Wait for CS to go High (Active) to start a transaction
+    wait 1 gpio 0
 
 .wrap_target
-start:
-    ; Counter for 16 bits
-    set x, 15
-    ; Wait for CS to go Low (Idle) first to ensure we sync correctly
-    wait 0 pin 0
-    ; Wait for CS to go High (Active) to start a transaction
-    wait 1 pin 0
-
 bitloop:
-    
-    ; Wait for Clock Rising Edge 
-    wait 1 pin 1
-    ; Shift 1 bit from Data Pin (0) into ISR
+    wait 0 gpio 1
+    wait 1 gpio 1
     in pins, 1
-
-    ; Decrement loop counter
-    jmp x--, bitloop
-
-    ; Push the 16-bit byte to the RX FIFO for CPU to read
-    push
-
-    ; Go back to the beginning and wait for CS to go LOW then HIGH
-
 .wrap
 
-    
+% c-sdk {
+static inline void spi_sniffer_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = spi_sniffer_program_get_default_config(offset);
+    printf("PIO SETUP: sm=%d  offset=%d  pin=%d\n", sm, offset, pin);
+    // Set the IN base pin to the provided `pins` parameter. This is the data pin
+    sm_config_set_in_pins(&c, pin);
+    // Set the pin directions to input at the PIO
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    // Connect this GPIO to this PIO block
+    pio_gpio_init(pio, pin);
 
+    // Shifting to left matches the customary MSB-first ordering of SPI.
+    sm_config_set_in_shift(
+        &c,
+        false, // Shift-to-right = false (i.e. shift to left)
+        true,  // Autopush enabled
+        16      // Autopush threshold = 16
+    );
+
+    // We only receive, so disable the TX FIFO to make the RX FIFO deeper.
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+
+    // Load our configuration, and start the program from the beginning
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

@@ -1,0 +1,43 @@
+; spi_sniffer.pio   MODIFIED FOR STEPPER CONTROLLER SNIFFING
+; PIO program to passively sniff SPI traffic on TI Stepper Controller.
+; It waits for CS to go Low (Idle), then High (Active).
+; It captures bytes in a loop as long as CS stays High.
+; When CS goes Low, it wraps back to start.
+
+.program spi_sniffer
+
+; -------------------------------
+; Pins Configuration (Controlled from C)
+; -------------------------------
+; WAIT PIN 0 : Chip Select (CS)
+; WAIT PIN 1 : Clock (SCK)
+; IN  PINS 0 : Data (MOSI or MISO) (Note: '0' here refers to the configured IN base)
+
+.wrap_target
+start:
+    ; Counter for 16 bits
+    set x, 15
+    ; Wait for CS to go Low (Idle) first to ensure we sync correctly
+    wait 0 pin 0
+    ; Wait for CS to go High (Active) to start a transaction
+    wait 1 pin 0
+
+bitloop:
+    
+    ; Wait for Clock Rising Edge 
+    wait 1 pin 1
+    ; Shift 1 bit from Data Pin (0) into ISR
+    in pins, 1
+
+    ; Decrement loop counter
+    jmp x--, bitloop
+
+    ; Push the 16-bit byte to the RX FIFO for CPU to read
+    push
+
+    ; Go back to the beginning and wait for CS to go LOW then HIGH
+
+.wrap
+
+    
+
