@@ -14,7 +14,6 @@
 #define PIN_MOSI 2
 #define PIN_MISO 3
 #define LED_PIN 25
-#define PIO_INPUT_PIN_BASE PIN_MOSI
 
 //#define MAX_TRANSACTION_SIZE 64
 
@@ -102,14 +101,22 @@ int main() {
     gpio_init(PIN_MOSI);
     gpio_set_dir(PIN_MOSI, GPIO_IN);
 
-    // PIO Setup
+    gpio_init(PIN_MISO);
+    gpio_set_dir(PIN_MISO, GPIO_IN);
+
+    // PIO MOSI Setup
     PIO pio = pio0;
     uint sm = pio_claim_unused_sm(pio, true);
     uint offset = pio_add_program(pio, &spi_sniffer_program);
-    spi_sniffer_program_init(pio, sm, offset, PIO_INPUT_PIN_BASE);
-    printf("PIO SETUP: sm=%d  offset=%d  pin=%d\n", sm, offset, PIO_INPUT_PIN_BASE);
+    spi_sniffer_program_init(pio, sm, offset, PIN_MOSI);
+    //printf("PIO MOSI SETUP: sm=%d  offset=%d  pin=%d\n", sm, offset, PIN_MOSI);
 
-
+    // PIO MISO Setup
+    uint sm_miso = pio_claim_unused_sm(pio, true);
+    //uint offset = pio_add_program(pio, &spi_sniffer_program);
+    spi_sniffer_program_init(pio, sm_miso, offset, PIN_MISO);
+    //printf("PIO MISO SETUP: sm=%d  offset=%d  pin=%d\n", sm_miso, offset, PIN_MISO);
+    printf("\n");
 
     // --- Main Loop ---
     while (true) {
@@ -117,7 +124,7 @@ int main() {
         if(!pio_sm_is_rx_fifo_empty(pio, sm))
         {
             uint16_t mosi_word = (uint16_t)(pio_sm_get(pio, sm)); //read the FIFO
-            printf("MOSI WORD = 0x%04x  \n", mosi_word);
+            //printf("MOSI WORD = 0x%04x  \n", mosi_word);
             if(!(mosi_word & READWRITE_MASK)) // bit 15 is low - WRITE
             {
                 printf("WRITE: ");
@@ -127,11 +134,11 @@ int main() {
                 printf("reg=%s  ", regstr);
                 uint16_t mosidata = mosi_word & DATA_MASK;
                 printf("data=0x%03x\n", mosidata);
-                //if(!pio_sm_is_rx_fifo_empty(pio, sm_miso))
-                //{
-                    // this is a WRITE - if there is MISO data, trash it
-                    //uint16_t trash = (uint16_t)(pio_sm_get(pio, sm_miso) >> 16);
-                //}
+                if(!pio_sm_is_rx_fifo_empty(pio, sm_miso))
+                {
+                    //this is a WRITE - if there is MISO data, trash it
+                    uint16_t trash = (uint16_t)(pio_sm_get(pio, sm_miso));
+                }
             }
             else 
             {
@@ -141,19 +148,18 @@ int main() {
                 char regstr2[5];
                 get_reg_string(rdaddr, regstr2);
                 printf("reg=%s  ", regstr2);
-                printf("data would be here...\n");
-                /*
+                //printf("data would be here...\n");
                 if(pio_sm_is_rx_fifo_empty(pio, sm_miso))
                 {
                     printf("\nNOTHING IN MISO FIFO!!\n");
                 }
                 else 
                 {
-                    uint16_t miso_word = (uint16_t)(pio_sm_get(pio, sm_miso) >> 16);
+                    uint16_t miso_word = (uint16_t)(pio_sm_get(pio, sm_miso));
                     uint16_t misodata = miso_word & DATA_MASK;
-                    printf("rcvdata=0x%x\n", misodata);
+                    printf("rcvdata=0x%03x\n", misodata);
                 }
-                */
+
             }
             ledstat = !ledstat;
             gpio_put(LED_PIN, ledstat);
