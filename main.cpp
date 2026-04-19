@@ -40,7 +40,7 @@ int main() {
 
     auto setup_pio_sm = [&](uint sm, uint data_pin, uint cs_pin, uint sck_pin) {
         pio_sm_config c = spi_sniffer_program_get_default_config(offset);
-        sm_config_set_clkdiv_int_frac8(&c, 375, 0);
+        sm_config_set_clkdiv_int_frac8(&c, 250, 0);
         sm_config_set_in_pins(&c, data_pin);
         //sm_config_set_in_shift(&c, true, false, 8);
         sm_config_set_in_shift(&c, true, false, 31);
@@ -67,8 +67,9 @@ int main() {
             //uint32_t tempshit = pio_sm_get(pio, sm_mosi);
             //printf("MOSI tempshit=0x%x\n", tempshit);
 
-            uint16_t mosi_word = (uint16_t)(pio_sm_get(pio, sm_mosi) >> 16); //read the FIFO
-            printf("MOSI WORD = 0x%x  ", mosi_word);
+            uint32_t mosi_word = (pio_sm_get(pio, sm_mosi) >> 16); //read the FIFO
+            printf("MOSI WORD = 0x%08x  \n", mosi_word);
+            /*
             if(!(mosi_word & READWRITE_MASK)) // bit 15 is low - WRITE
             {
                 printf("WRITE: ");
@@ -99,7 +100,7 @@ int main() {
                     printf("rcvdata=0x%x\n", misodata);
                 }
             }
-
+            */
             ledstat = !ledstat;
             gpio_put(LED_PIN, ledstat);
         }
